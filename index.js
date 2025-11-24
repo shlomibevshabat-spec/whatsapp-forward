@@ -5,14 +5,10 @@ const axios = require('axios');
 const qrcode = require('qrcode-terminal');
 const mime = require('mime-types');
 
-// ================== FIXED VALUES (AS REQUESTED) ==================
-// Telegram bot token
+// ================== FIXED VALUES ==================
 const TELEGRAM_BOT_TOKEN = "8226331707:AAFb12NhOoHEDXIrYIvZhEtg63Um7Bg-CmQ";
-
-// Telegram channel ID (MUST start with -100)
 const TELEGRAM_CHANNEL_ID = "-1001888973840";
 
-// WhatsApp group IDs (12 groups)
 const WHATSAPP_GROUP_IDS = [
   "120363042249649319@g.us",
   "120363031058682306@g.us",
@@ -28,40 +24,52 @@ const WHATSAPP_GROUP_IDS = [
   "120363042249649319@g.us"
 ];
 
-// ================== EXPRESS SERVER ==================
+// ================== EXPRESS ==================
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
-  res.send('OK — Telegram → WhatsApp forwarder is running.');
+  res.send('OK — Telegram → WhatsApp forwarder running.');
 });
 
 app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
 });
 
-// ================== WHATSAPP WEB CLIENT ==================
+// ================== WHATSAPP WEB CLIENT — RENDER FIX ==================
 let waReady = false;
 
 const waClient = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: true,
+    executablePath: '/usr/bin/google-chrome',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-infobars',
+      '--single-process',
+      '--no-zygote',
+      '--window-size=1920,1080'
+    ]
   }
 });
 
 waClient.on('qr', (qr) => {
-  console.log('📱 Scan this QR code with WhatsApp (WhatsApp Web):');
+  console.log('📱 Scan this QR code with WhatsApp:');
   qrcode.generate(qr, { small: true });
 });
 
 waClient.on('ready', () => {
   waReady = true;
-  console.log('✅ WhatsApp Web client connected!');
+  console.log('✅ WhatsApp Web connected!');
 });
 
 waClient.on('auth_failure', (msg) => {
-  console.error('❌ WhatsApp auth failure:', msg);
+  console.error('❌ Auth failed:', msg);
 });
 
 waClient.on('disconnected', (reason) => {
@@ -74,88 +82,75 @@ waClient.initialize();
 // ================== TELEGRAM BOT ==================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-console.log('🤖 Telegram bot started.');
-
+console.log("🤖 Telegram bot started.");
 
 // ================== FUNCTIONS ==================
 
 async function downloadTelegramFile(fileId) {
   const file = await bot.getFile(fileId);
-  const downloadURL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+  const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-  const response = await axios.get(downloadURL, { responseType: 'arraybuffer' });
-  const mimeType = mime.lookup(file.file_path) || 'application/octet-stream';
-  const base64 = Buffer.from(response.data).toString('base64');
+  const response = await axios.get(url, { responseType: 'arraybuffer' });
 
-  return { base64, mimeType };
+  return {
+    base64: Buffer.from(response.data).toString('base64'),
+    mimeType: mime.lookup(file.file_path) || 'application/octet-stream'
+  };
 }
 
 async function sendTextToWhatsApp(text) {
-  for (const groupId of WHATSAPP_GROUP_IDS) {
+  for (const id of WHATSAPP_GROUP_IDS) {
     try {
-      await waClient.sendMessage(groupId, text);
-      console.log(`➡️ Sent text to: ${groupId}`);
+      await waClient.sendMessage(id, text);
     } catch (err) {
-      console.error(`❌ Failed to send text to ${groupId}:`, err.message);
+      console.error(`Error sending text to ${id}:`, err.message);
     }
   }
 }
 
 async function sendMediaToWhatsApp(mimeType, base64, caption) {
   const media = new MessageMedia(mimeType, base64);
-
-  for (const groupId of WHATSAPP_GROUP_IDS) {
+  for (const id of WHATSAPP_GROUP_IDS) {
     try {
-      await waClient.sendMessage(groupId, media, { caption });
-      console.log(`➡️ Sent media to: ${groupId}`);
+      await waClient.sendMessage(id, media, { caption });
     } catch (err) {
-      console.error(`❌ Failed to send media to ${groupId}:`, err.message);
+      console.error(`Error sending media to ${id}:`, err.message);
     }
   }
 }
 
-async function handleTelegram(msg) {
+async function handle(msg) {
   const chatId = msg.chat.id.toString();
 
-  // Forward ONLY from your channel
   if (chatId !== TELEGRAM_CHANNEL_ID) return;
-
-  if (!waReady) {
-    console.log('⚠️ WhatsApp not ready yet.');
-    return;
-  }
+  if (!waReady) return;
 
   const caption = msg.caption || msg.text || "";
 
-  // TEXT
   if (msg.text && !msg.photo && !msg.video && !msg.document) {
     await sendTextToWhatsApp(caption);
     return;
   }
 
-  // PHOTO
   if (msg.photo) {
     const photo = msg.photo[msg.photo.length - 1];
-    const file = await downloadTelegramFile(photo.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    const data = await downloadTelegramFile(photo.file_id);
+    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
     return;
   }
 
-  // VIDEO
   if (msg.video) {
-    const file = await downloadTelegramFile(msg.video.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    const data = await downloadTelegramFile(msg.video.file_id);
+    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
     return;
   }
 
-  // DOCUMENT
   if (msg.document) {
-    const file = await downloadTelegramFile(msg.document.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    const data = await downloadTelegramFile(msg.document.file_id);
+    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
     return;
   }
 }
 
-// ================== LISTENERS ==================
-bot.on('message', handleTelegram);
-bot.on('channel_post', handleTelegram);
+bot.on('message', handle);
+bot.on('channel_post', handle);
