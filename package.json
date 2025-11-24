@@ -1,8 +1,17 @@
 {
-  "name": "whatsapp-forward",
+  "name": "telegram-whatsapp",
   "version": "1.0.0",
+  "description": "Forward Telegram channel messages (text, images, videos) to multiple WhatsApp groups using WhatsApp Web.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "express": "^4.18.2",
+    "mime-types": "^2.1.35",
+    "node-telegram-bot-api": "^0.63.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
   }
 }
