@@ -24,37 +24,25 @@ const WHATSAPP_GROUP_IDS = [
   "120363042249649319@g.us"
 ];
 
-// ================== EXPRESS ==================
+// ================== EXPRESS SERVER ==================
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
-  res.send('OK — Telegram → WhatsApp forwarder running.');
+  res.send('OK — Telegram → WhatsApp forwarder is running.');
 });
 
 app.listen(PORT, () => {
   console.log(`🌐 Server running on port ${PORT}`);
 });
 
-// ================== WHATSAPP WEB CLIENT — RENDER FIX ==================
+// ================== WHATSAPP CLIENT – VERSION THAT WORKED ==================
 let waReady = false;
 
 const waClient = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    headless: true,
-    executablePath: '/usr/bin/google-chrome',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-infobars',
-      '--single-process',
-      '--no-zygote',
-      '--window-size=1920,1080'
-    ]
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 });
 
@@ -65,11 +53,11 @@ waClient.on('qr', (qr) => {
 
 waClient.on('ready', () => {
   waReady = true;
-  console.log('✅ WhatsApp Web connected!');
+  console.log('✅ WhatsApp Web client connected!');
 });
 
 waClient.on('auth_failure', (msg) => {
-  console.error('❌ Auth failed:', msg);
+  console.error('❌ WhatsApp auth failure:', msg);
 });
 
 waClient.on('disconnected', (reason) => {
@@ -82,7 +70,8 @@ waClient.initialize();
 // ================== TELEGRAM BOT ==================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-console.log("🤖 Telegram bot started.");
+console.log('🤖 Telegram bot started.');
+
 
 // ================== FUNCTIONS ==================
 
@@ -91,41 +80,44 @@ async function downloadTelegramFile(fileId) {
   const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
   const response = await axios.get(url, { responseType: 'arraybuffer' });
+  const mimeType = mime.lookup(file.file_path) || 'application/octet-stream';
 
   return {
     base64: Buffer.from(response.data).toString('base64'),
-    mimeType: mime.lookup(file.file_path) || 'application/octet-stream'
+    mimeType
   };
 }
 
 async function sendTextToWhatsApp(text) {
-  for (const id of WHATSAPP_GROUP_IDS) {
+  for (const groupId of WHATSAPP_GROUP_IDS) {
     try {
-      await waClient.sendMessage(id, text);
+      await waClient.sendMessage(groupId, text);
+      console.log(`➡️ Sent text to: ${groupId}`);
     } catch (err) {
-      console.error(`Error sending text to ${id}:`, err.message);
+      console.error(`❌ Failed to send text to ${groupId}:`, err.message);
     }
   }
 }
 
 async function sendMediaToWhatsApp(mimeType, base64, caption) {
   const media = new MessageMedia(mimeType, base64);
-  for (const id of WHATSAPP_GROUP_IDS) {
+
+  for (const groupId of WHATSAPP_GROUP_IDS) {
     try {
-      await waClient.sendMessage(id, media, { caption });
+      await waClient.sendMessage(groupId, media, { caption });
+      console.log(`➡️ Sent media to: ${groupId}`);
     } catch (err) {
-      console.error(`Error sending media to ${id}:`, err.message);
+      console.error(`❌ Failed to send media to ${groupId}:`, err.message);
     }
   }
 }
 
-async function handle(msg) {
+async function handleTelegram(msg) {
   const chatId = msg.chat.id.toString();
+  const caption = msg.caption || msg.text || '';
 
   if (chatId !== TELEGRAM_CHANNEL_ID) return;
   if (!waReady) return;
-
-  const caption = msg.caption || msg.text || "";
 
   if (msg.text && !msg.photo && !msg.video && !msg.document) {
     await sendTextToWhatsApp(caption);
@@ -134,23 +126,23 @@ async function handle(msg) {
 
   if (msg.photo) {
     const photo = msg.photo[msg.photo.length - 1];
-    const data = await downloadTelegramFile(photo.file_id);
-    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
+    const file = await downloadTelegramFile(photo.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
     return;
   }
 
   if (msg.video) {
-    const data = await downloadTelegramFile(msg.video.file_id);
-    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
+    const file = await downloadTelegramFile(msg.video.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
     return;
   }
 
   if (msg.document) {
-    const data = await downloadTelegramFile(msg.document.file_id);
-    await sendMediaToWhatsApp(data.mimeType, data.base64, caption);
+    const file = await downloadTelegramFile(msg.document.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
     return;
   }
 }
 
-bot.on('message', handle);
-bot.on('channel_post', handle);
+bot.on('message', handleTelegram);
+bot.on('channel_post', handleTelegram);
