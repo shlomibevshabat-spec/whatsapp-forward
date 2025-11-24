@@ -5,53 +5,59 @@ const axios = require('axios');
 const qrcode = require('qrcode-terminal');
 const mime = require('mime-types');
 
-// ================== ENVIRONMENT VARIABLES ==================
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID; // ID of the Telegram channel (or group) to forward from
-const WHATSAPP_GROUP_IDS = (process.env.WHATSAPP_GROUP_IDS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean); // Comma-separated list of WhatsApp group IDs
+// ================== FIXED VALUES (AS REQUESTED) ==================
+// Telegram bot token
+const TELEGRAM_BOT_TOKEN = "8226331707:AAFb12NhOoHEDXIrYIvZhEtg63Um7Bg-CmQ";
 
-if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID || WHATSAPP_GROUP_IDS.length === 0) {
-  console.error('❌ Missing required environment variables: TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, WHATSAPP_GROUP_IDS');
-  process.exit(1);
-}
+// Telegram channel ID (MUST start with -100)
+const TELEGRAM_CHANNEL_ID = "-1001888973840";
 
-console.log('✅ Loaded ENV:');
-console.log('  TELEGRAM_CHANNEL_ID =', TELEGRAM_CHANNEL_ID);
-console.log('  WHATSAPP_GROUP_IDS  =', WHATSAPP_GROUP_IDS.join(', '));
+// WhatsApp group IDs (12 groups)
+const WHATSAPP_GROUP_IDS = [
+  "120363042249649319@g.us",
+  "120363031058682306@g.us",
+  "120363046136542161@g.us",
+  "120363042245554211@g.us",
+  "120363046679835533@g.us",
+  "120363042884732176@g.us",
+  "120363024793780358@g.us",
+  "120363391155320572@g.us",
+  "120363041222191874@g.us",
+  "120363024351000992@g.us",
+  "120363024504810327@g.us",
+  "120363042249649319@g.us"
+];
 
-// ================== EXPRESS (HEALTH CHECK) ==================
+// ================== EXPRESS SERVER ==================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send('OK - Telegram → WhatsApp forwarder is running.');
+  res.send('OK — Telegram → WhatsApp forwarder is running.');
 });
 
 app.listen(PORT, () => {
-  console.log(`🌐 HTTP server listening on port ${PORT}`);
+  console.log(`🌐 Server running on port ${PORT}`);
 });
 
 // ================== WHATSAPP WEB CLIENT ==================
 let waReady = false;
 
 const waClient = new Client({
-  authStrategy: new LocalAuth(), // Stores session data on disk
+  authStrategy: new LocalAuth(),
   puppeteer: {
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   }
 });
 
 waClient.on('qr', (qr) => {
-  console.log('📱 Scan this QR code with your WhatsApp (WhatsApp Web):');
+  console.log('📱 Scan this QR code with WhatsApp (WhatsApp Web):');
   qrcode.generate(qr, { small: true });
 });
 
 waClient.on('ready', () => {
   waReady = true;
-  console.log('✅ WhatsApp Web client is ready!');
+  console.log('✅ WhatsApp Web client connected!');
 });
 
 waClient.on('auth_failure', (msg) => {
@@ -60,7 +66,7 @@ waClient.on('auth_failure', (msg) => {
 
 waClient.on('disconnected', (reason) => {
   waReady = false;
-  console.error('⚠️ WhatsApp client disconnected:', reason);
+  console.error('⚠️ WhatsApp disconnected:', reason);
 });
 
 waClient.initialize();
@@ -68,170 +74,88 @@ waClient.initialize();
 // ================== TELEGRAM BOT ==================
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
-console.log('🤖 Telegram bot started, polling enabled.');
+console.log('🤖 Telegram bot started.');
 
-/**
- * Download a file from Telegram and return { base64, mimeType }
- */
+
+// ================== FUNCTIONS ==================
+
 async function downloadTelegramFile(fileId) {
   const file = await bot.getFile(fileId);
-  const filePath = file.file_path;
-  const url = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
+  const downloadURL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-  console.log('⬇️ Downloading Telegram file from:', url);
-
-  const response = await axios.get(url, { responseType: 'arraybuffer' });
-  const mimeType = mime.lookup(filePath) || 'application/octet-stream';
+  const response = await axios.get(downloadURL, { responseType: 'arraybuffer' });
+  const mimeType = mime.lookup(file.file_path) || 'application/octet-stream';
   const base64 = Buffer.from(response.data).toString('base64');
 
   return { base64, mimeType };
 }
 
-/**
- * Forward a text message to all configured WhatsApp groups
- */
-async function forwardTextToWhatsApp(text) {
-  if (!text) return;
+async function sendTextToWhatsApp(text) {
   for (const groupId of WHATSAPP_GROUP_IDS) {
     try {
       await waClient.sendMessage(groupId, text);
-      console.log(`➡️ Sent text to WhatsApp group: ${groupId}`);
+      console.log(`➡️ Sent text to: ${groupId}`);
     } catch (err) {
       console.error(`❌ Failed to send text to ${groupId}:`, err.message);
     }
   }
 }
 
-/**
- * Forward media (image/video/document) with optional caption to all WhatsApp groups
- */
-async function forwardMediaToWhatsApp(mimeType, base64, caption) {
+async function sendMediaToWhatsApp(mimeType, base64, caption) {
   const media = new MessageMedia(mimeType, base64);
+
   for (const groupId of WHATSAPP_GROUP_IDS) {
     try {
       await waClient.sendMessage(groupId, media, { caption });
-      console.log(`➡️ Sent media to WhatsApp group: ${groupId}`);
+      console.log(`➡️ Sent media to: ${groupId}`);
     } catch (err) {
       console.error(`❌ Failed to send media to ${groupId}:`, err.message);
     }
   }
 }
 
-/**
- * Handle incoming Telegram messages (from private chat / groups / channels)
- * isChannelPost = true when handling channel_post updates.
- */
-async function handleTelegramUpdate(msg, isChannelPost = false) {
-  try {
-    const chatId = msg.chat.id.toString();
-    const isSourceChannel = (chatId === TELEGRAM_CHANNEL_ID);
-    const text = msg.text || '';
+async function handleTelegram(msg) {
+  const chatId = msg.chat.id.toString();
 
-    // ----- Commands (only from private chats, not the source channel) -----
-    if (text && text.startsWith('/')) {
-      // /listgroups - show WhatsApp group IDs
-      if (text === '/listgroups') {
-        if (!waReady) {
-          await bot.sendMessage(chatId, 'WhatsApp is not ready yet. Please wait a few seconds and try again.');
-          return;
-        }
-        const chats = await waClient.getChats();
-        const groups = chats.filter(c => c.isGroup);
+  // Forward ONLY from your channel
+  if (chatId !== TELEGRAM_CHANNEL_ID) return;
 
-        if (!groups.length) {
-          await bot.sendMessage(chatId, 'No WhatsApp groups found on this account.');
-          return;
-        }
+  if (!waReady) {
+    console.log('⚠️ WhatsApp not ready yet.');
+    return;
+  }
 
-        let reply = 'WhatsApp groups on this account:\n\n';
-        reply += groups
-          .map(g => `${g.name} -> ${g.id._serialized}`)
-          .join('\n');
+  const caption = msg.caption || msg.text || "";
 
-        await bot.sendMessage(chatId, reply);
-        return;
-      }
+  // TEXT
+  if (msg.text && !msg.photo && !msg.video && !msg.document) {
+    await sendTextToWhatsApp(caption);
+    return;
+  }
 
-      // /debug - show chat id (useful to get TELEGRAM_CHANNEL_ID)
-      if (text === '/debug') {
-        await bot.sendMessage(chatId, `This chat ID is: ${chatId}`);
-        return;
-      }
+  // PHOTO
+  if (msg.photo) {
+    const photo = msg.photo[msg.photo.length - 1];
+    const file = await downloadTelegramFile(photo.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    return;
+  }
 
-      // /help - simple help
-      if (text === '/help') {
-        await bot.sendMessage(
-          chatId,
-          'Commands:\n' +
-          '/listgroups - list all WhatsApp groups and their IDs\n' +
-          '/debug - show this chat ID\n' +
-          'Normal messages from the configured Telegram channel will be forwarded to WhatsApp groups.'
-        );
-        return;
-      }
-    }
+  // VIDEO
+  if (msg.video) {
+    const file = await downloadTelegramFile(msg.video.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    return;
+  }
 
-    // ----- Only forward messages from the configured channel/group -----
-    if (!isSourceChannel) {
-      return;
-    }
-
-    if (!waReady) {
-      console.log('⚠️ Received a message from source channel but WhatsApp is not ready yet.');
-      return;
-    }
-
-    // Caption or text for media
-    const caption = msg.caption || msg.text || '';
-
-    // 1) Text-only messages
-    if (msg.text && !msg.photo && !msg.video && !msg.document) {
-      console.log('📨 Forwarding text from Telegram channel:', caption);
-      await forwardTextToWhatsApp(caption);
-      return;
-    }
-
-    // 2) Photos
-    if (msg.photo && msg.photo.length > 0) {
-      console.log('📸 Forwarding photo from Telegram channel.');
-      // Use the highest resolution photo (last element)
-      const photo = msg.photo[msg.photo.length - 1];
-      const fileId = photo.file_id;
-      const { base64, mimeType } = await downloadTelegramFile(fileId);
-      await forwardMediaToWhatsApp(mimeType, base64, caption);
-      return;
-    }
-
-    // 3) Videos
-    if (msg.video) {
-      console.log('🎥 Forwarding video from Telegram channel.');
-      const fileId = msg.video.file_id;
-      const { base64, mimeType } = await downloadTelegramFile(fileId);
-      await forwardMediaToWhatsApp(mimeType, base64, caption);
-      return;
-    }
-
-    // 4) Documents (optional media)
-    if (msg.document) {
-      console.log('📎 Forwarding document from Telegram channel.');
-      const fileId = msg.document.file_id;
-      const { base64, mimeType } = await downloadTelegramFile(fileId);
-      await forwardMediaToWhatsApp(mimeType, base64, caption);
-      return;
-    }
-
-    console.log('ℹ️ Message type not handled, ignoring.');
-  } catch (err) {
-    console.error('❌ Error while handling Telegram update:', err);
+  // DOCUMENT
+  if (msg.document) {
+    const file = await downloadTelegramFile(msg.document.file_id);
+    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+    return;
   }
 }
 
-// Listen for normal messages (private chats / groups)
-bot.on('message', async (msg) => {
-  await handleTelegramUpdate(msg, false);
-});
-
-// Listen for channel posts
-bot.on('channel_post', async (msg) => {
-  await handleTelegramUpdate(msg, true);
-});
+// ================== LISTENERS ==================
+bot.on('message', handleTelegram);
+bot.on('channel_post', handleTelegram);
