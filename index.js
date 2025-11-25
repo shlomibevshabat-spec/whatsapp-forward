@@ -40,8 +40,12 @@ app.listen(PORT, () => {
 let waReady = false;
 
 const waClient = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    clientId: 'telegram-whatsapp-forwarder' // keep session in a fixed folder
+  }),
   restartOnAuthFail: true,
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 0,
   puppeteer: {
     headless: true,
     args: [
@@ -52,23 +56,40 @@ const waClient = new Client({
       '--disable-accelerated-2d-canvas',
       '--disable-extensions',
       '--disable-infobars',
-      '--window-size=1280,720'
+      '--window-size=1280,720',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--force-color-profile=srgb',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--no-zygote'
     ]
   }
 });
 
 waClient.on('qr', (qr) => {
+  waReady = false;
   console.log('📱 Scan this QR code with WhatsApp:');
   qrcode.generate(qr, { small: true });
 });
 
-waClient.on('ready', () => {
-  waReady = true;
-  console.log('✅ WhatsApp Web client connected!');
+waClient.on('loading_screen', (percent, message) => {
+  console.log(`⏳ WhatsApp loading: ${percent}% - ${message}`);
 });
 
 waClient.on('authenticated', () => {
   console.log('🔐 WhatsApp authenticated.');
+});
+
+waClient.on('ready', () => {
+  waReady = true;
+  console.log('✅ WhatsApp Web client connected and ready!');
 });
 
 waClient.on('auth_failure', (msg) => {
@@ -79,6 +100,15 @@ waClient.on('auth_failure', (msg) => {
 waClient.on('disconnected', (reason) => {
   waReady = false;
   console.error('⚠️ WhatsApp disconnected:', reason);
+  // Optional: reinitialize on disconnect after some delay
+  setTimeout(() => {
+    console.log('♻️ Re-initializing WhatsApp client after disconnect...');
+    waClient.initialize();
+  }, 5000);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('🚨 Unhandled Promise Rejection:', reason);
 });
 
 waClient.initialize();
@@ -103,6 +133,7 @@ async function downloadTelegramFile(fileId) {
 }
 
 async function sendTextToWhatsApp(text) {
+  if (!text || !text.trim()) return;
   for (const groupId of WHATSAPP_GROUP_IDS) {
     try {
       await waClient.sendMessage(groupId, text);
@@ -132,43 +163,49 @@ async function handleTelegram(msg) {
   const caption = msg.caption || msg.text || '';
 
   // Only forward from the specific channel
-  if (chatId !== TELEGRAM_CHANNEL_ID) return;
+  if (chatId !== TELEGRAM_CHANNEL_ID) {
+    return;
+  }
 
-  // Only send if WhatsApp is ready
   if (!waReady) {
     console.log('ℹ️ WhatsApp not ready yet, skipping message.');
     return;
   }
 
-  // Pure text message
-  if (msg.text && !msg.photo && !msg.video && !msg.document) {
-    await sendTextToWhatsApp(caption);
-    return;
-  }
+  try {
+    // Pure text message
+    if (msg.text && !msg.photo && !msg.video && !msg.document) {
+      await sendTextToWhatsApp(caption);
+      return;
+    }
 
-  // Photo
-  if (msg.photo && msg.photo.length > 0) {
-    const photo = msg.photo[msg.photo.length - 1];
-    const file = await downloadTelegramFile(photo.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
-    return;
-  }
+    // Photo
+    if (msg.photo && msg.photo.length > 0) {
+      const photo = msg.photo[msg.photo.length - 1];
+      const file = await downloadTelegramFile(photo.file_id);
+      await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+      return;
+    }
 
-  // Video
-  if (msg.video) {
-    const file = await downloadTelegramFile(msg.video.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
-    return;
-  }
+    // Video
+    if (msg.video) {
+      const file = await downloadTelegramFile(msg.video.file_id);
+      await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+      return;
+    }
 
-  // Document (could be image, video, etc.)
-  if (msg.document) {
-    const file = await downloadTelegramFile(msg.document.file_id);
-    await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
-    return;
+    // Document (could be image, video, etc.)
+    if (msg.document) {
+      const file = await downloadTelegramFile(msg.document.file_id);
+      await sendMediaToWhatsApp(file.mimeType, file.base64, caption);
+      return;
+    }
+
+    console.log('ℹ️ Unsupported Telegram message type, nothing sent.');
+  } catch (err) {
+    console.error('💥 Error handling Telegram message:', err);
   }
 }
 
 bot.on('message', handleTelegram);
 bot.on('channel_post', handleTelegram);
-
